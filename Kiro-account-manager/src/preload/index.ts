@@ -583,6 +583,26 @@ const api = {
     return ipcRenderer.invoke('proxy-reset-credits')
   },
 
+  // 重置累计 tokens
+  proxyResetTokens: (): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('proxy-reset-tokens')
+  },
+
+  // 获取反代详细日志
+  proxyGetLogs: (count?: number): Promise<Array<{ timestamp: string; level: string; category: string; message: string; data?: unknown }>> => {
+    return ipcRenderer.invoke('proxy-get-logs', count)
+  },
+
+  // 清除反代详细日志
+  proxyClearLogs: (): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('proxy-clear-logs')
+  },
+
+  // 获取反代日志数量
+  proxyGetLogsCount: (): Promise<number> => {
+    return ipcRenderer.invoke('proxy-get-logs-count')
+  },
+
   // 更新反代服务器配置
   proxyUpdateConfig: (config: { port?: number; host?: string; apiKey?: string; enableMultiAccount?: boolean; selectedAccountIds?: string[]; logRequests?: boolean; autoStart?: boolean; maxRetries?: number; preferredEndpoint?: 'codewhisperer' | 'amazonq'; autoContinueRounds?: number; disableTools?: boolean }): Promise<{ success: boolean; config?: unknown; error?: string }> => {
     return ipcRenderer.invoke('proxy-update-config', config)

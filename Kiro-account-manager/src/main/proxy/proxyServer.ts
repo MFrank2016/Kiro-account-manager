@@ -13,6 +13,7 @@ import type {
 } from './types'
 import { AccountPool } from './accountPool'
 import { callKiroApiStream, callKiroApi, fetchKiroModels, type KiroModel } from './kiroApi'
+import { proxyLogger } from './logger'
 import {
   openaiToKiro,
   claudeToKiro,
@@ -30,6 +31,7 @@ export interface ProxyServerEvents {
   onTokenRefresh?: TokenRefreshCallback
   onAccountUpdate?: (account: ProxyAccount) => void
   onCreditsUpdate?: (totalCredits: number) => void
+  onTokensUpdate?: (inputTokens: number, outputTokens: number) => void
 }
 
 export class ProxyServer {
@@ -128,7 +130,7 @@ export class ProxyServer {
 
       const protocol = this.isHttps ? 'https' : 'http'
       this.server.listen(this.config.port, this.config.host, () => {
-        console.log(`[ProxyServer] Started on ${protocol}://${this.config.host}:${this.config.port}`)
+        proxyLogger.info('ProxyServer', `Started on ${protocol}://${this.config.host}:${this.config.port}`)
         this.stats.startTime = Date.now()
         this.events.onStatusChange?.(true, this.config.port)
         resolve()
@@ -166,7 +168,7 @@ export class ProxyServer {
 
     return new Promise((resolve) => {
       this.server!.close(() => {
-        console.log('[ProxyServer] Stopped')
+        proxyLogger.info('ProxyServer', 'Stopped')
         this.server = null
         this.events.onStatusChange?.(false, this.config.port)
         resolve()
@@ -217,6 +219,20 @@ export class ProxyServer {
   resetTotalCredits(): void {
     this.stats.totalCredits = 0
     this.events.onCreditsUpdate?.(0)
+  }
+
+  // 设置初始累计 tokens（用于从持久化存储恢复）
+  setTotalTokens(inputTokens: number, outputTokens: number): void {
+    this.stats.inputTokens = inputTokens
+    this.stats.outputTokens = outputTokens
+    this.stats.totalTokens = inputTokens + outputTokens
+  }
+
+  // 重置累计 tokens
+  resetTotalTokens(): void {
+    this.stats.inputTokens = 0
+    this.stats.outputTokens = 0
+    this.stats.totalTokens = 0
   }
 
   // 是否运行中
@@ -495,7 +511,7 @@ export class ProxyServer {
 
     // 记录请求
     if (this.config.logRequests) {
-      console.log(`[ProxyServer] ${method} ${path}`)
+      proxyLogger.info('ProxyServer', `${method} ${path}`)
     }
 
     try {
@@ -697,7 +713,16 @@ export class ProxyServer {
   private async handleModels(res: http.ServerResponse): Promise<void> {
     const now = Date.now()
     
-    // 预设模型（兼容 OpenAI 格式）
+    // Kiro 官方模型（与 UI 保持一致）
+    const kiroOfficialModels = [
+      { id: 'auto', object: 'model', created: now, owned_by: 'kiro-api', description: 'Auto select best model' },
+      { id: 'claude-sonnet-4.5', object: 'model', created: now, owned_by: 'kiro-api', description: 'The latest Claude Sonnet model' },
+      { id: 'claude-sonnet-4', object: 'model', created: now, owned_by: 'kiro-api', description: 'Hybrid reasoning and coding' },
+      { id: 'claude-haiku-4.5', object: 'model', created: now, owned_by: 'kiro-api', description: 'The latest Claude Haiku model' },
+      { id: 'claude-opus-4.5', object: 'model', created: now, owned_by: 'kiro-api', description: 'The most powerful model' }
+    ]
+
+    // 预设模型（GPT 兼容别名）
     const presetModels = [
       { id: 'gpt-4o', object: 'model', created: now, owned_by: 'kiro-proxy' },
       { id: 'gpt-4', object: 'model', created: now, owned_by: 'kiro-proxy' },
@@ -719,7 +744,7 @@ export class ProxyServer {
           kiroModels = await fetchKiroModels(account)
           if (kiroModels.length > 0) {
             this.modelCache = { models: kiroModels, timestamp: now }
-            console.log(`[ProxyServer] Fetched ${kiroModels.length} models from Kiro API`)
+            proxyLogger.info('ProxyServer', `Fetched ${kiroModels.length} models from Kiro API`)
           }
         } catch (error) {
           console.error('[ProxyServer] Failed to fetch Kiro models:', error)
@@ -727,9 +752,9 @@ export class ProxyServer {
       }
     }
 
-    // 转换 Kiro 模型为 OpenAI 格式
+    // 转换 Kiro 模型为 OpenAI 格式（保持原始 modelId）
     const dynamicModels = kiroModels.map(m => ({
-      id: m.modelId.replace(/\./g, '-'), // claude-sonnet-4.5 -> claude-sonnet-4-5
+      id: m.modelId,
       object: 'model' as const,
       created: now,
       owned_by: 'kiro-api',
@@ -737,11 +762,19 @@ export class ProxyServer {
       model_name: m.modelName
     }))
 
-    // 合并模型列表（动态 + 预设），去重
+    // 合并模型列表，去重
     const modelIds = new Set<string>()
     const allModels: Array<{ id: string; object: string; created: number; owned_by: string; description?: string; model_name?: string }> = []
     
-    // 先添加动态模型
+    // 1. 先添加 Kiro 官方模型（与 UI 保持一致）
+    for (const m of kiroOfficialModels) {
+      if (!modelIds.has(m.id)) {
+        modelIds.add(m.id)
+        allModels.push(m)
+      }
+    }
+    
+    // 2. 添加动态模型（从 API 获取的，可能有额外模型）
     for (const m of dynamicModels) {
       if (!modelIds.has(m.id)) {
         modelIds.add(m.id)
@@ -749,7 +782,7 @@ export class ProxyServer {
       }
     }
     
-    // 再添加预设模型
+    // 3. 添加 GPT 兼容别名
     for (const m of presetModels) {
       if (!modelIds.has(m.id)) {
         modelIds.add(m.id)
@@ -805,6 +838,8 @@ export class ProxyServer {
 
         this.stats.successRequests++
         this.stats.totalTokens += result.usage.inputTokens + result.usage.outputTokens
+        this.stats.inputTokens += result.usage.inputTokens
+        this.stats.outputTokens += result.usage.outputTokens
         this.accountPool.recordSuccess(usedAccount.id, result.usage.inputTokens + result.usage.outputTokens)
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -882,8 +917,11 @@ export class ProxyServer {
         async (usage) => {
           this.stats.successRequests++
           this.stats.totalTokens += usage.inputTokens + usage.outputTokens
+          this.stats.inputTokens += usage.inputTokens
+          this.stats.outputTokens += usage.outputTokens
           this.stats.totalCredits += usage.credits || 0
           this.events.onCreditsUpdate?.(this.stats.totalCredits)
+          this.events.onTokensUpdate?.(this.stats.inputTokens, this.stats.outputTokens)
           this.accountPool.recordSuccess(account.id, usage.inputTokens + usage.outputTokens)
           this.events.onResponse?.({ path: '/v1/chat/completions', status: 200, tokens: usage.inputTokens + usage.outputTokens, credits: usage.credits })
           this.recordRequest({ path: '/v1/chat/completions', model, accountId: account.id, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits, responseTime: Date.now() - startTime, success: true })
@@ -958,9 +996,28 @@ export class ProxyServer {
             }
             resolve()
           } else {
-            // 发送结束 chunk
+            // 发送结束 chunk（包含完整 usage 信息）
             const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
-            const finalChunk = createOpenaiStreamChunk(id, model, {}, finishReason)
+            const usageInfo: {
+              prompt_tokens: number
+              completion_tokens: number
+              total_tokens: number
+              prompt_tokens_details?: { cached_tokens?: number }
+              completion_tokens_details?: { reasoning_tokens?: number }
+            } = {
+              prompt_tokens: usage.inputTokens,
+              completion_tokens: usage.outputTokens,
+              total_tokens: usage.inputTokens + usage.outputTokens
+            }
+            // 添加 cache tokens 详情
+            if (usage.cacheReadTokens && usage.cacheReadTokens > 0) {
+              usageInfo.prompt_tokens_details = { cached_tokens: usage.cacheReadTokens }
+            }
+            // 添加 reasoning tokens 详情
+            if (usage.reasoningTokens && usage.reasoningTokens > 0) {
+              usageInfo.completion_tokens_details = { reasoning_tokens: usage.reasoningTokens }
+            }
+            const finalChunk = createOpenaiStreamChunk(id, model, {}, finishReason, usageInfo)
             res.write(`data: ${JSON.stringify(finalChunk)}\n\n`)
             res.write('data: [DONE]\n\n')
             res.end()
@@ -1022,6 +1079,8 @@ export class ProxyServer {
 
         this.stats.successRequests++
         this.stats.totalTokens += result.usage.inputTokens + result.usage.outputTokens
+        this.stats.inputTokens += result.usage.inputTokens
+        this.stats.outputTokens += result.usage.outputTokens
         this.accountPool.recordSuccess(usedAccount.id, result.usage.inputTokens + result.usage.outputTokens)
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1060,6 +1119,9 @@ export class ProxyServer {
     let collectedContent = ''
     const pendingToolCalls: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
 
+    // 估算输入 tokens（基于 payload 大小）
+    const estimatedInputTokens = Math.max(1, Math.round(JSON.stringify(kiroPayload).length / 3))
+    
     // 发送 message_start（仅首轮）
     if (currentRound === 0) {
       const messageStart = createClaudeStreamEvent('message_start', {
@@ -1071,7 +1133,7 @@ export class ProxyServer {
           model,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 }
+          usage: { input_tokens: estimatedInputTokens, output_tokens: 0 }
         }
       })
       res.write(`event: message_start\ndata: ${JSON.stringify(messageStart)}\n\n`)
@@ -1138,8 +1200,11 @@ export class ProxyServer {
 
           this.stats.successRequests++
           this.stats.totalTokens += usage.inputTokens + usage.outputTokens
+          this.stats.inputTokens += usage.inputTokens
+          this.stats.outputTokens += usage.outputTokens
           this.stats.totalCredits += usage.credits || 0
           this.events.onCreditsUpdate?.(this.stats.totalCredits)
+          this.events.onTokensUpdate?.(this.stats.inputTokens, this.stats.outputTokens)
           this.accountPool.recordSuccess(account.id, usage.inputTokens + usage.outputTokens)
           this.events.onResponse?.({ path: '/v1/messages', status: 200, tokens: usage.inputTokens + usage.outputTokens, credits: usage.credits })
           this.recordRequest({ path: '/v1/messages', model, accountId: account.id, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits, responseTime: Date.now() - startTime, success: true })
@@ -1202,11 +1267,11 @@ export class ProxyServer {
             }
             resolve()
           } else {
-            // 发送 message_delta
+            // 发送 message_delta（包含完整 usage 信息）
             const stopReason = hasToolCalls ? 'tool_use' : 'end_turn'
             const messageDelta = createClaudeStreamEvent('message_delta', {
               delta: { stop_reason: stopReason, stop_sequence: null } as any,
-              usage: { output_tokens: usage.outputTokens }
+              usage: { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens }
             })
             res.write(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`)
             // 发送 message_stop

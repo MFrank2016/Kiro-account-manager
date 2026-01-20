@@ -144,7 +144,7 @@ export interface ClaudeStreamEvent {
   index?: number
   content_block?: ClaudeContentBlock
   delta?: { type: string; text?: string; stop_reason?: string; stop_sequence?: string }
-  usage?: { output_tokens: number }
+  usage?: { input_tokens?: number; output_tokens: number }
   error?: { type: string; message: string }
 }
 

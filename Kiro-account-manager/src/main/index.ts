@@ -8,6 +8,7 @@ import { encode, decode } from 'cbor-x'
 import icon from '../../resources/icon.png?asset'
 import { ProxyServer, type ProxyAccount, type ProxyConfig } from './proxy'
 import { fetchKiroModels, fetchSubscriptionToken, fetchAvailableSubscriptions } from './proxy/kiroApi'
+import { proxyLogStore } from './proxy/logger'
 import {
   createTray,
   destroyTray,
@@ -114,10 +115,15 @@ let proxyServer: ProxyServer | null = null
 function initProxyServer(): ProxyServer {
   if (proxyServer) return proxyServer
 
+  // 初始化日志存储
+  proxyLogStore.initialize(app.getPath('userData'))
+
   // 从 store 加载保存的配置，如果没有则使用默认配置
   const savedConfig = store?.get('proxyConfig') as Partial<ProxyConfig> | undefined
-  // 从 store 加载保存的累计 credits
+  // 从 store 加载保存的累计 credits 和 tokens
   const savedTotalCredits = (store?.get('proxyTotalCredits') as number) || 0
+  const savedInputTokens = (store?.get('proxyInputTokens') as number) || 0
+  const savedOutputTokens = (store?.get('proxyOutputTokens') as number) || 0
   const defaultConfig: ProxyConfig = {
     enabled: false,
     port: 5580,
@@ -189,6 +195,13 @@ function initProxyServer(): ProxyServer {
         if (store) {
           store.set('proxyTotalCredits', totalCredits)
         }
+      },
+      // Tokens 更新回调 - 持久化累计 tokens
+      onTokensUpdate: (inputTokens, outputTokens) => {
+        if (store) {
+          store.set('proxyInputTokens', inputTokens)
+          store.set('proxyOutputTokens', outputTokens)
+        }
       }
     }
   )
@@ -196,6 +209,11 @@ function initProxyServer(): ProxyServer {
   // 恢复保存的累计 credits
   if (savedTotalCredits > 0) {
     proxyServer.setTotalCredits(savedTotalCredits)
+  }
+
+  // 恢复保存的累计 tokens
+  if (savedInputTokens > 0 || savedOutputTokens > 0) {
+    proxyServer.setTotalTokens(savedInputTokens, savedOutputTokens)
   }
 
   return proxyServer
@@ -3776,7 +3794,41 @@ app.whenReady().then(async () => {
     if (proxyServer) {
       proxyServer.resetTotalCredits()
     }
+    if (store) {
+      store.set('proxyTotalCredits', 0)
+    }
     return { success: true }
+  })
+
+  // IPC: 重置累计 tokens
+  ipcMain.handle('proxy-reset-tokens', () => {
+    if (proxyServer) {
+      proxyServer.resetTotalTokens()
+    }
+    if (store) {
+      store.set('proxyInputTokens', 0)
+      store.set('proxyOutputTokens', 0)
+    }
+    return { success: true }
+  })
+
+  // IPC: 获取反代日志
+  ipcMain.handle('proxy-get-logs', (_event, count?: number) => {
+    if (count) {
+      return proxyLogStore.getLast(count)
+    }
+    return proxyLogStore.getAll()
+  })
+
+  // IPC: 清除反代日志
+  ipcMain.handle('proxy-clear-logs', () => {
+    proxyLogStore.clear()
+    return { success: true }
+  })
+
+  // IPC: 获取反代日志数量
+  ipcMain.handle('proxy-get-logs-count', () => {
+    return proxyLogStore.count()
   })
 
   // IPC: 更新反代服务器配置
@@ -3943,8 +3995,8 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 代理日志持久化
-  const getProxyLogsPath = (): string => join(app.getPath('userData'), 'proxy-logs.json')
+  // 代理日志持久化（请求日志，与详细日志分开存储）
+  const getProxyLogsPath = (): string => join(app.getPath('userData'), 'proxy-request-logs.json')
   const MAX_LOGS = 100
 
   // IPC: 保存代理日志

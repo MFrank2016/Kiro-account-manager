@@ -4,6 +4,7 @@ import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Inpu
 import { useAccountsStore } from '../../store/accounts'
 import { useTranslation } from '../../hooks/useTranslation'
 import { ProxyLogsDialog } from './ProxyLogsDialog'
+import { ProxyDetailedLogsDialog } from './ProxyDetailedLogsDialog'
 import { ModelsDialog } from './ModelsDialog'
 import { AccountSelectDialog } from './AccountSelectDialog'
 
@@ -13,6 +14,8 @@ interface ProxyStats {
   failedRequests: number
   totalTokens: number
   totalCredits: number
+  inputTokens: number
+  outputTokens: number
   startTime: number
 }
 
@@ -53,6 +56,7 @@ export function ProxyPanel() {
   const [syncSuccess, setSyncSuccess] = useState(false)
   const [refreshSuccess, setRefreshSuccess] = useState(false)
   const [showLogsDialog, setShowLogsDialog] = useState(false)
+  const [showDetailedLogsDialog, setShowDetailedLogsDialog] = useState(false)
   const [showModelsDialog, setShowModelsDialog] = useState(false)
   const [showAccountSelectDialog, setShowAccountSelectDialog] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
@@ -693,44 +697,53 @@ export function ProxyPanel() {
             {isEn ? 'API Endpoints' : 'API 端点'}
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <div className="grid grid-cols-2 gap-2">
-            <code className="text-muted-foreground">POST /v1/chat/completions</code>
-            <span className="text-right">{isEn ? 'OpenAI Compatible' : 'OpenAI 兼容'}</span>
+        <CardContent className="space-y-1.5 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-orange-500 w-11 flex-shrink-0 font-mono">POST</span>
+            <code className="text-muted-foreground flex-1 font-mono">/v1/chat/completions</code>
+            <span className="text-xs text-muted-foreground">{isEn ? 'OpenAI Compatible' : 'OpenAI 兼容'}</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <code className="text-muted-foreground">POST /v1/messages</code>
-            <span className="text-right">{isEn ? 'Claude Compatible' : 'Claude 兼容'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-orange-500 w-11 flex-shrink-0 font-mono">POST</span>
+            <code className="text-muted-foreground flex-1 font-mono">/v1/messages</code>
+            <span className="text-xs text-muted-foreground">{isEn ? 'Claude Compatible' : 'Claude 兼容'}</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <code className="text-muted-foreground">POST /anthropic/v1/messages</code>
-            <span className="text-right">{isEn ? 'Claude Code Compatible' : 'Claude Code 兼容'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-orange-500 w-11 flex-shrink-0 font-mono">POST</span>
+            <code className="text-muted-foreground flex-1 font-mono">/anthropic/v1/messages</code>
+            <span className="text-xs text-muted-foreground">{isEn ? 'Claude Code' : 'Claude Code'}</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <code className="text-muted-foreground">POST /v1/messages/count_tokens</code>
-            <span className="text-right">{isEn ? 'Token Count' : 'Token 计数'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-orange-500 w-11 flex-shrink-0 font-mono">POST</span>
+            <code className="text-muted-foreground flex-1 font-mono">/v1/messages/count_tokens</code>
+            <span className="text-xs text-muted-foreground">{isEn ? 'Token Count' : 'Token 计数'}</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <code className="text-muted-foreground">GET /v1/models</code>
-            <span className="text-right">{isEn ? 'Model List' : '模型列表'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-green-500 w-11 flex-shrink-0 font-mono">GET</span>
+            <code className="text-muted-foreground flex-1 font-mono">/v1/models</code>
+            <span className="text-xs text-muted-foreground">{isEn ? 'Model List' : '模型列表'}</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <code className="text-muted-foreground">GET /health</code>
-            <span className="text-right">{isEn ? 'Health Check' : '健康检查'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-green-500 w-11 flex-shrink-0 font-mono">GET</span>
+            <code className="text-muted-foreground flex-1 font-mono">/health</code>
+            <span className="text-xs text-muted-foreground">{isEn ? 'Health Check' : '健康检查'}</span>
           </div>
-          <div className="border-t pt-2 mt-2 space-y-2">
+          <div className="border-t pt-2 mt-2 space-y-1.5">
             <div className="text-xs text-muted-foreground mb-1">{isEn ? 'Admin API (Requires API Key)' : '管理 API (需要 API Key)'}</div>
-            <div className="grid grid-cols-2 gap-2">
-              <code className="text-muted-foreground">GET /admin/stats</code>
-              <span className="text-right">{isEn ? 'Detailed Stats' : '详细统计'}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-green-500 w-11 flex-shrink-0 font-mono">GET</span>
+              <code className="text-muted-foreground flex-1 font-mono">/admin/stats</code>
+              <span className="text-xs text-muted-foreground">{isEn ? 'Detailed Stats' : '详细统计'}</span>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <code className="text-muted-foreground">GET /admin/accounts</code>
-              <span className="text-right">{isEn ? 'Account List' : '账号列表'}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-green-500 w-11 flex-shrink-0 font-mono">GET</span>
+              <code className="text-muted-foreground flex-1 font-mono">/admin/accounts</code>
+              <span className="text-xs text-muted-foreground">{isEn ? 'Account List' : '账号列表'}</span>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <code className="text-muted-foreground">GET /admin/logs</code>
-              <span className="text-right">{isEn ? 'Request Logs' : '请求日志'}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-green-500 w-11 flex-shrink-0 font-mono">GET</span>
+              <code className="text-muted-foreground flex-1 font-mono">/admin/logs</code>
+              <span className="text-xs text-muted-foreground">{isEn ? 'Request Logs' : '请求日志'}</span>
             </div>
           </div>
         </CardContent>
@@ -753,16 +766,21 @@ export function ProxyPanel() {
                   <FileText className="h-3 w-3 mr-1" />
                   {isEn ? 'View All' : '查看全部'}
                 </Button>
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setShowDetailedLogsDialog(true)}>
+                  <Activity className="h-3 w-3 mr-1" />
+                  {isEn ? 'Detailed Logs' : '详细日志'}
+                </Button>
               </div>
             </div>
           </CardHeader>
           <CardContent className="pt-2">
             <div className="max-h-[150px] overflow-y-auto text-xs font-mono space-y-0.5">
               {recentLogs.slice(0, 5).map((log, idx) => (
-                <div key={idx} className="grid grid-cols-4 gap-2 py-1 px-2 rounded hover:bg-muted/50 items-center">
+                <div key={idx} className="grid grid-cols-5 gap-2 py-1 px-2 rounded hover:bg-muted/50 items-center">
                   <span className="text-muted-foreground">{log.time}</span>
                   <span className="truncate" title={log.path}>{log.path}</span>
                   <span className={`text-center ${log.status >= 400 ? 'text-red-500' : 'text-green-500'}`}>{log.status}</span>
+                  <span className="text-muted-foreground text-right">{log.tokens ? log.tokens.toLocaleString() : '-'}</span>
                   <span className="text-muted-foreground text-right">{log.credits ? log.credits.toFixed(4) : '-'}</span>
                 </div>
               ))}
@@ -825,6 +843,7 @@ export function ProxyPanel() {
         onOpenChange={setShowLogsDialog}
         logs={recentLogs}
         totalCredits={stats?.totalCredits || 0}
+        totalTokens={(stats?.inputTokens || 0) + (stats?.outputTokens || 0)}
         onClearLogs={() => {
           setRecentLogs([])
           window.api.proxySaveLogs([])
@@ -833,7 +852,17 @@ export function ProxyPanel() {
           await window.api.proxyResetCredits()
           fetchStatus()
         }}
+        onResetTokens={async () => {
+          await window.api.proxyResetTokens()
+          fetchStatus()
+        }}
         isEn={isEn}
+      />
+
+      {/* 详细日志弹窗 */}
+      <ProxyDetailedLogsDialog
+        open={showDetailedLogsDialog}
+        onOpenChange={setShowDetailedLogsDialog}
       />
 
       {/* 模型列表弹窗 */}

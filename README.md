@@ -271,6 +271,20 @@ The project is configured with GitHub Actions workflow for auto building all pla
 
 ## 📋 Changelog
 
+### v1.4.3 (2025-01-20)
+- 📋 **Detailed Logs Viewer**: New detailed logs page for proxy server, similar to console output, supports real-time event viewing
+- 💾 **Log Persistence**: All proxy logs are persistently saved to `proxy-logs.json` until manually cleared
+- 🎨 **Logs UI Enhancement**: Beautiful logs interface with search, filter by level/category, auto-scroll, export and clear functions
+- 🎯 **Theme Adaptive**: Logs interface and dropdown colors follow user selected theme
+- 🔧 **Custom Dropdown**: Replaced native select with styled custom dropdown component with icons and selected state
+- 🧠 **Execution-Oriented Directive**: Auto-inject execution-oriented directive into system prompt to prevent AI goal drifting
+- 📊 **Extended Token Info**: Added Cache Tokens (read/write) and Reasoning Tokens statistics
+- 📈 **Complete Usage Response**: OpenAI/Claude streaming responses now return complete usage information
+- 🔗 **API Endpoints Layout**: API endpoints list now uses 3-column layout (method/path/description), POST in orange, GET in green
+- 🔄 **Unified Log Routing**: Logs from kiroApi and proxyServer are now routed through proxyLogger to UI
+- 🐛 **Log Storage Fix**: Fixed request logs and detailed logs using same file path causing data loss
+- 🐛 **Invalid Date Fix**: Fixed "Invalid Date.NaN" issue when loading old logs
+
 ### v1.4.2 (2025-01-20)
 - 🔄 **Native History Support**: Refactored based on Kiro official implementation, using native history field instead of text embedding
 - 🧹 **Message Sanitization**: Implemented sanitizeConversation to ensure message alternation, tool call matching, etc.

@@ -16,8 +16,10 @@ interface ProxyLogsDialogProps {
   onOpenChange: (open: boolean) => void
   logs: LogEntry[]
   totalCredits: number // 累计总 credits（所有请求）
+  totalTokens: number // 累计总 tokens（所有请求）
   onClearLogs: () => void
   onResetCredits?: () => void
+  onResetTokens?: () => void
   isEn: boolean
 }
 
@@ -26,8 +28,10 @@ export function ProxyLogsDialog({
   onOpenChange,
   logs,
   totalCredits,
+  totalTokens,
   onClearLogs,
   onResetCredits,
+  onResetTokens,
   isEn
 }: ProxyLogsDialogProps) {
   const [expandedError, setExpandedError] = useState<number | null>(null)
@@ -50,6 +54,7 @@ export function ProxyLogsDialog({
   const successCount = logs.filter(l => l.status < 400).length
   const errorCount = logs.filter(l => l.status >= 400).length
   const recentCredits = logs.reduce((sum, l) => sum + (l.credits || 0), 0)
+  const recentTokens = logs.reduce((sum, l) => sum + (l.tokens || 0), 0)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -72,15 +77,26 @@ export function ProxyLogsDialog({
               </Button>
             </div>
           </div>
-          <div className="flex gap-4 mt-2 text-sm">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-sm">
             <span>{isEn ? 'Total' : '总计'}: <Badge variant="secondary">{logs.length}</Badge></span>
             <span>{isEn ? 'Success' : '成功'}: <Badge className="bg-green-500/20 text-green-600">{successCount}</Badge></span>
             <span>{isEn ? 'Error' : '错误'}: <Badge className="bg-red-500/20 text-red-600">{errorCount}</Badge></span>
-            <span>{isEn ? 'Recent' : '最近'}: <Badge variant="outline">{recentCredits.toFixed(4)}</Badge></span>
+            <span className="text-muted-foreground">|</span>
+            <span>Tokens {isEn ? 'Recent' : '最近'}: <Badge variant="outline">{recentTokens.toLocaleString()}</Badge></span>
             <span className="flex items-center gap-1">
-              {isEn ? 'Total' : '总计'}: <Badge variant="secondary">{totalCredits.toFixed(4)}</Badge>
+              Tokens {isEn ? 'Total' : '总计'}: <Badge variant="secondary">{totalTokens.toLocaleString()}</Badge>
+              {onResetTokens && (
+                <Button variant="ghost" size="icon" className="h-5 w-5" onClick={onResetTokens} title={isEn ? 'Reset total' : '重置总计'}>
+                  <RotateCcw className="h-3 w-3" />
+                </Button>
+              )}
+            </span>
+            <span className="text-muted-foreground">|</span>
+            <span>Credits {isEn ? 'Recent' : '最近'}: <Badge variant="outline">{recentCredits.toFixed(4)}</Badge></span>
+            <span className="flex items-center gap-1">
+              Credits {isEn ? 'Total' : '总计'}: <Badge variant="secondary">{totalCredits.toFixed(4)}</Badge>
               {onResetCredits && (
-                <Button variant="ghost" size="icon" className="h-5 w-5" onClick={onResetCredits} title={isEn ? 'Reset total credits' : '重置总计'}>
+                <Button variant="ghost" size="icon" className="h-5 w-5" onClick={onResetCredits} title={isEn ? 'Reset total' : '重置总计'}>
                   <RotateCcw className="h-3 w-3" />
                 </Button>
               )}
@@ -100,6 +116,7 @@ export function ProxyLogsDialog({
                     <th className="text-left p-2 font-medium">{isEn ? 'Time' : '时间'}</th>
                     <th className="text-left p-2 font-medium">{isEn ? 'Path' : '路径'}</th>
                     <th className="text-center p-2 font-medium">{isEn ? 'Status' : '状态'}</th>
+                    <th className="text-right p-2 font-medium">Tokens</th>
                     <th className="text-right p-2 font-medium">Credits</th>
                   </tr>
                 </thead>
@@ -137,6 +154,7 @@ export function ProxyLogsDialog({
                           </Badge>
                         )}
                       </td>
+                      <td className="p-2 text-right text-muted-foreground">{log.tokens ? log.tokens.toLocaleString() : '-'}</td>
                       <td className="p-2 text-right text-muted-foreground">{log.credits ? log.credits.toFixed(6) : '-'}</td>
                     </tr>
                   ))}

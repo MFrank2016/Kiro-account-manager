@@ -528,6 +528,18 @@ interface KiroApi {
   // 重置累计 credits
   proxyResetCredits: () => Promise<{ success: boolean }>
 
+  // 重置累计 tokens
+  proxyResetTokens: () => Promise<{ success: boolean }>
+
+  // 获取反代详细日志
+  proxyGetLogs: (count?: number) => Promise<Array<{ timestamp: string; level: string; category: string; message: string; data?: unknown }>>
+
+  // 清除反代详细日志
+  proxyClearLogs: () => Promise<{ success: boolean }>
+
+  // 获取反代日志数量
+  proxyGetLogsCount: () => Promise<number>
+
   // 更新反代服务器配置
   proxyUpdateConfig: (config: { port?: number; host?: string; apiKey?: string; enableMultiAccount?: boolean; selectedAccountIds?: string[]; logRequests?: boolean; autoStart?: boolean; maxRetries?: number; preferredEndpoint?: 'codewhisperer' | 'amazonq'; autoContinueRounds?: number; disableTools?: boolean }) => Promise<{ success: boolean; config?: unknown; error?: string }>
 

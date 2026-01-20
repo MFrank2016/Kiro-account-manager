@@ -124,6 +124,9 @@ class ProxyLogger {
       this.currentFileSize += Buffer.byteLength(line)
       this.rotateIfNeeded()
     }
+
+    // 同时添加到内存存储（用于 UI 显示）
+    proxyLogStore.add(entry)
   }
 
   debug(category: string, message: string, data?: unknown): void {
@@ -211,6 +214,119 @@ class ProxyLogger {
     return this.config.logDir
   }
 }
+
+// 内存日志存储（用于 UI 显示）
+class ProxyLogStore {
+  private logs: LogEntry[] = []
+  private maxLogs: number = 10000 // 最大保存条数
+  private listeners: ((entry: LogEntry) => void)[] = []
+  private storePath: string = ''
+
+  initialize(userDataPath: string): void {
+    this.storePath = path.join(userDataPath, 'proxy-logs.json')
+    this.load()
+  }
+
+  private load(): void {
+    try {
+      if (fs.existsSync(this.storePath)) {
+        const data = fs.readFileSync(this.storePath, 'utf-8')
+        const parsed = JSON.parse(data)
+        // 验证并过滤有效的日志条目
+        this.logs = Array.isArray(parsed) ? parsed.filter((log: LogEntry) => {
+          // 必须有有效的 timestamp
+          if (!log.timestamp || isNaN(new Date(log.timestamp).getTime())) {
+            return false
+          }
+          // 必须有 level 和 category
+          if (!log.level || !log.category) {
+            return false
+          }
+          return true
+        }) : []
+        console.log(`[ProxyLogStore] Loaded ${this.logs.length} valid logs`)
+      }
+    } catch (error) {
+      console.error('[ProxyLogStore] Failed to load logs:', error)
+      this.logs = []
+    }
+  }
+
+  save(): void {
+    try {
+      fs.writeFileSync(this.storePath, JSON.stringify(this.logs), 'utf-8')
+    } catch (error) {
+      console.error('[ProxyLogStore] Failed to save logs:', error)
+    }
+  }
+
+  private saveTimer: NodeJS.Timeout | null = null
+  private pendingSave = false
+
+  add(entry: LogEntry): void {
+    this.logs.push(entry)
+    
+    // 超过最大数量时删除最旧的
+    if (this.logs.length > this.maxLogs) {
+      this.logs = this.logs.slice(-this.maxLogs)
+    }
+
+    // 通知监听器
+    for (const listener of this.listeners) {
+      try {
+        listener(entry)
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    // 延迟保存（避免频繁写入）
+    this.scheduleSave()
+  }
+
+  private scheduleSave(): void {
+    if (this.pendingSave) return
+    this.pendingSave = true
+    
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+    }
+    
+    this.saveTimer = setTimeout(() => {
+      this.save()
+      this.pendingSave = false
+    }, 5000) // 5秒后保存
+  }
+
+  getAll(): LogEntry[] {
+    return [...this.logs]
+  }
+
+  getLast(count: number): LogEntry[] {
+    return this.logs.slice(-count)
+  }
+
+  clear(): void {
+    this.logs = []
+    this.save()
+  }
+
+  count(): number {
+    return this.logs.length
+  }
+
+  onLog(listener: (entry: LogEntry) => void): () => void {
+    this.listeners.push(listener)
+    return () => {
+      const index = this.listeners.indexOf(listener)
+      if (index >= 0) {
+        this.listeners.splice(index, 1)
+      }
+    }
+  }
+}
+
+export const proxyLogStore = new ProxyLogStore()
 
 // 单例导出
 export const proxyLogger = new ProxyLogger()

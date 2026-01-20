@@ -10,6 +10,7 @@ import type {
   KiroToolUse,
   ProxyAccount
 } from './types'
+import { proxyLogger } from './logger'
 
 // Kiro API 端点配置
 const KIRO_ENDPOINTS = [
@@ -454,7 +455,7 @@ export async function callKiroApiStream(
   account: ProxyAccount,
   payload: KiroPayload,
   onChunk: (text: string, toolUse?: KiroToolUse) => void,
-  onComplete: (usage: { inputTokens: number; outputTokens: number; credits: number }) => void,
+  onComplete: (usage: { inputTokens: number; outputTokens: number; credits: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number }) => void,
   onError: (error: Error) => void,
   signal?: AbortSignal,
   preferredEndpoint?: 'codewhisperer' | 'amazonq'
@@ -501,7 +502,9 @@ export async function callKiroApiStream(
       }
 
       // 解析 Event Stream
-      await parseEventStream(response.body!, onChunk, onComplete, onError)
+      // 计算输入字符长度用于估算 input tokens
+      const inputChars = payloadStr.length
+      await parseEventStream(response.body!, onChunk, onComplete, onError, inputChars)
       return
     } catch (error) {
       lastError = error as Error
@@ -572,12 +575,29 @@ interface ToolUseState {
 async function parseEventStream(
   body: ReadableStream<Uint8Array>,
   onChunk: (text: string, toolUse?: KiroToolUse) => void,
-  onComplete: (usage: { inputTokens: number; outputTokens: number; credits: number }) => void,
-  onError: (error: Error) => void
+  onComplete: (usage: { inputTokens: number; outputTokens: number; credits: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number }) => void,
+  onError: (error: Error) => void,
+  inputChars: number = 0  // 输入字符长度，用于估算 input tokens
 ): Promise<void> {
   const reader = body.getReader()
   let buffer = new Uint8Array(0)
-  let usage = { inputTokens: 0, outputTokens: 0, credits: 0 }
+  let usage = { 
+    inputTokens: 0, 
+    outputTokens: 0, 
+    credits: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0
+  }
+  
+  // 累积输出文本长度，用于估算 tokens
+  let totalOutputChars = 0
+  
+  // 估算 input tokens（基于输入字符长度）
+  // 约 3 个字符 = 1 token（混合中英文场景的保守估计）
+  if (inputChars > 0) {
+    usage.inputTokens = Math.max(1, Math.round(inputChars / 3))
+  }
   
   // Tool use 状态跟踪 - 用于累积输入片段
   let currentToolUse: ToolUseState | null = null
@@ -637,6 +657,8 @@ async function parseEventStream(
               const content = assistantResp.content
               if (content) {
                 onChunk(content)
+                // 累积输出字符长度
+                totalOutputChars += content.length
               }
             }
             
@@ -705,9 +727,9 @@ async function parseEventStream(
                 let parseError = false
                 try {
                   if (currentToolUse.inputBuffer) {
-                    console.log('[Kiro] Tool input buffer:', currentToolUse.inputBuffer.substring(0, 200))
+                    proxyLogger.debug('Kiro', 'Tool input buffer: ' + currentToolUse.inputBuffer.substring(0, 200))
                     finalInput = JSON.parse(currentToolUse.inputBuffer)
-                    console.log('[Kiro] Parsed tool input:', JSON.stringify(finalInput).substring(0, 200))
+                    proxyLogger.debug('Kiro', 'Parsed tool input: ' + JSON.stringify(finalInput).substring(0, 200))
                   }
                 } catch (e) {
                   parseError = true
@@ -740,12 +762,12 @@ async function parseEventStream(
             // 处理 messageMetadataEvent - 包含 token 使用量
             if (eventType === 'messageMetadataEvent' || eventType === 'metadataEvent' || event.messageMetadataEvent || event.metadataEvent) {
               const metadata = event.messageMetadataEvent || event.metadataEvent || event
-              console.log('[Kiro] messageMetadataEvent:', JSON.stringify(metadata))
+              proxyLogger.info('Kiro', 'messageMetadataEvent', metadata)
               
               // 检查 tokenUsage 对象
               if (metadata.tokenUsage) {
                 const tokenUsage = metadata.tokenUsage
-                console.log('[Kiro] tokenUsage:', JSON.stringify(tokenUsage))
+                proxyLogger.info('Kiro', 'tokenUsage', tokenUsage)
                 // 计算 inputTokens = uncachedInputTokens + cacheReadInputTokens + cacheWriteInputTokens
                 const uncached = tokenUsage.uncachedInputTokens || 0
                 const cacheRead = tokenUsage.cacheReadInputTokens || 0
@@ -760,7 +782,26 @@ async function parseEventStream(
                     usage.inputTokens = tokenUsage.totalTokens - usage.outputTokens
                   }
                 }
-                console.log('[Kiro] Parsed usage:', usage)
+                
+                // 保存 cache tokens
+                usage.cacheReadTokens = cacheRead
+                usage.cacheWriteTokens = cacheWrite
+                
+                // 记录上下文使用百分比
+                if (tokenUsage.contextUsagePercentage !== undefined) {
+                  proxyLogger.info('Kiro', 'Context usage: ' + tokenUsage.contextUsagePercentage.toFixed(2) + '%')
+                }
+                
+                // 详细的 token 分解日志
+                proxyLogger.info('Kiro', 'Token breakdown', {
+                  uncached,
+                  cacheRead,
+                  cacheWrite,
+                  inputTotal: calculatedInput,
+                  output: tokenUsage.outputTokens || 0,
+                  total: tokenUsage.totalTokens || 0,
+                  contextUsage: tokenUsage.contextUsagePercentage ? `${tokenUsage.contextUsagePercentage.toFixed(2)}%` : 'N/A'
+                })
               }
               
               // 直接在 metadata 中的 tokens
@@ -769,7 +810,7 @@ async function parseEventStream(
             }
             
             // 调试：打印所有事件类型（包括常见类型）
-            console.log('[Kiro] Event:', eventType || 'unknown', JSON.stringify(event).slice(0, 500))
+            proxyLogger.debug('Kiro', 'Event: ' + (eventType || 'unknown'), JSON.stringify(event).slice(0, 500))
             
             // 处理 usageEvent
             if (eventType === 'usageEvent' || eventType === 'usage' || event.usageEvent || event.usage) {
@@ -784,15 +825,132 @@ async function parseEventStream(
               if (metering.usage && typeof metering.usage === 'number') {
                 // 累加 credit 使用量
                 usage.credits += metering.usage
-                console.log('[Kiro] meteringEvent - credit:', metering.usage, 'total credits:', usage.credits)
+                proxyLogger.info('Kiro', `meteringEvent - credit: ${metering.usage}, total: ${usage.credits}`)
               }
             }
             
-            // 检查 supplementaryWebLinksEvent 中的 usage
-            if (event.supplementaryWebLinksEvent) {
-              const webLinks = event.supplementaryWebLinksEvent
-              if (webLinks.inputTokens) usage.inputTokens = webLinks.inputTokens
-              if (webLinks.outputTokens) usage.outputTokens = webLinks.outputTokens
+            // 处理 supplementaryWebLinksEvent - 网页链接引用
+            if (eventType === 'supplementaryWebLinksEvent' || event.supplementaryWebLinksEvent) {
+              const webLinksEvent = event.supplementaryWebLinksEvent || event
+              if (webLinksEvent.supplementaryWebLinks && Array.isArray(webLinksEvent.supplementaryWebLinks)) {
+                // 格式化网页链接引用
+                const links = webLinksEvent.supplementaryWebLinks
+                  .filter((link: { url?: string; title?: string; snippet?: string }) => link.url)
+                  .map((link: { url?: string; title?: string; snippet?: string }) => {
+                    const title = link.title || link.url
+                    return `- [${title}](${link.url})`
+                  })
+                if (links.length > 0) {
+                  onChunk(`\n\n🔗 **Web References:**\n${links.join('\n')}`)
+                }
+              }
+              proxyLogger.debug('Kiro', 'supplementaryWebLinksEvent', JSON.stringify(webLinksEvent).slice(0, 300))
+            }
+            
+            // 处理 contextUsageEvent - 上下文使用百分比
+            if (eventType === 'contextUsageEvent' || event.contextUsageEvent) {
+              const contextEvent = event.contextUsageEvent || event
+              if (contextEvent.contextUsagePercentage !== undefined) {
+                const percentage = contextEvent.contextUsagePercentage
+                proxyLogger.info('Kiro', 'contextUsageEvent - Context usage: ' + percentage.toFixed(2) + '%')
+                // 如果上下文使用率超过 80%，发送警告
+                if (percentage > 80) {
+                  console.warn('[Kiro] Warning: Context usage is high:', percentage.toFixed(2) + '%')
+                }
+              }
+            }
+            
+            // 处理 reasoningContentEvent - Thinking 模式的推理内容
+            if (eventType === 'reasoningContentEvent' || event.reasoningContentEvent) {
+              const reasoning = event.reasoningContentEvent || event
+              // 推理内容可能包含 text 或 signature
+              if (reasoning.text) {
+                // 将推理内容作为特殊格式输出（用 <thinking> 标签包裹）
+                onChunk(`<thinking>${reasoning.text}</thinking>`)
+                totalOutputChars += reasoning.text.length
+                // 累计 reasoning tokens（约 3 字符 = 1 token）
+                usage.reasoningTokens += Math.max(1, Math.round(reasoning.text.length / 3))
+              }
+              proxyLogger.debug('Kiro', 'reasoningContentEvent', JSON.stringify(reasoning).slice(0, 200))
+            }
+            
+            // 处理 codeReferenceEvent - 代码引用/许可证信息
+            if (eventType === 'codeReferenceEvent' || event.codeReferenceEvent) {
+              const codeRef = event.codeReferenceEvent || event
+              if (codeRef.references && Array.isArray(codeRef.references)) {
+                // 格式化代码引用信息
+                const refTexts = codeRef.references
+                  .filter((ref: { licenseName?: string; repository?: string; url?: string }) => ref.licenseName || ref.repository)
+                  .map((ref: { licenseName?: string; repository?: string; url?: string }) => {
+                    const parts: string[] = []
+                    if (ref.licenseName) parts.push(`License: ${ref.licenseName}`)
+                    if (ref.repository) parts.push(`Repo: ${ref.repository}`)
+                    if (ref.url) parts.push(`URL: ${ref.url}`)
+                    return parts.join(', ')
+                  })
+                if (refTexts.length > 0) {
+                  onChunk(`\n\n📚 **Code References:**\n${refTexts.join('\n')}`)
+                }
+              }
+              proxyLogger.debug('Kiro', 'codeReferenceEvent', JSON.stringify(codeRef).slice(0, 300))
+            }
+            
+            // 处理 followupPromptEvent - 后续提示建议
+            if (eventType === 'followupPromptEvent' || event.followupPromptEvent) {
+              const followup = event.followupPromptEvent || event
+              if (followup.followupPrompt) {
+                const prompt = followup.followupPrompt
+                if (prompt.content || prompt.userIntent) {
+                  // 将后续提示作为建议输出
+                  const suggestion = prompt.content || prompt.userIntent
+                  onChunk(`\n\n💡 **Suggested follow-up:** ${suggestion}`)
+                }
+              }
+              proxyLogger.debug('Kiro', 'followupPromptEvent', JSON.stringify(followup).slice(0, 200))
+            }
+            
+            // 处理 intentsEvent - 意图事件（artifact、deeplinks 等）
+            if (eventType === 'intentsEvent' || event.intentsEvent) {
+              const intents = event.intentsEvent || event
+              // 意图事件主要用于 UI 渲染，记录日志即可
+              proxyLogger.debug('Kiro', 'intentsEvent', JSON.stringify(intents).slice(0, 300))
+            }
+            
+            // 处理 interactionComponentsEvent - 交互组件事件
+            if (eventType === 'interactionComponentsEvent' || event.interactionComponentsEvent) {
+              const components = event.interactionComponentsEvent || event
+              // 交互组件主要用于 UI 渲染，记录日志即可
+              proxyLogger.debug('Kiro', 'interactionComponentsEvent', JSON.stringify(components).slice(0, 300))
+            }
+            
+            // 处理 invalidStateEvent - 无效状态事件（错误处理）
+            if (eventType === 'invalidStateEvent' || event.invalidStateEvent) {
+              const invalid = event.invalidStateEvent || event
+              const reason = invalid.reason || 'UNKNOWN'
+              const message = invalid.message || 'Invalid state detected'
+              console.error('[Kiro] invalidStateEvent:', reason, message)
+              // 将无效状态作为错误消息输出
+              onChunk(`\n\n⚠️ **Warning:** ${message} (reason: ${reason})`)
+            }
+            
+            // 处理 citationEvent - 引用事件
+            if (eventType === 'citationEvent' || event.citationEvent) {
+              const citation = event.citationEvent || event
+              if (citation.citations && Array.isArray(citation.citations)) {
+                // 格式化引用信息
+                const citationTexts = citation.citations
+                  .filter((c: { title?: string; url?: string; content?: string }) => c.title || c.url)
+                  .map((c: { title?: string; url?: string; content?: string }, i: number) => {
+                    const parts = [`[${i + 1}]`]
+                    if (c.title) parts.push(c.title)
+                    if (c.url) parts.push(`(${c.url})`)
+                    return parts.join(' ')
+                  })
+                if (citationTexts.length > 0) {
+                  onChunk(`\n\n📖 **Citations:**\n${citationTexts.join('\n')}`)
+                }
+              }
+              proxyLogger.debug('Kiro', 'citationEvent', JSON.stringify(citation).slice(0, 300))
             }
             
             // 检查错误
@@ -830,7 +988,15 @@ async function parseEventStream(
       })
     }
     
-    console.log('[Kiro] Stream complete, final usage:', JSON.stringify(usage))
+    // 如果 API 没有返回 token 信息，基于输出字符长度估算
+    // Token 估算规则：约 4 个字符 = 1 token（对于英文），中文约 2 字符 = 1 token
+    // 这里使用保守估计：平均 3 个字符 = 1 token
+    if (usage.outputTokens === 0 && totalOutputChars > 0) {
+      usage.outputTokens = Math.max(1, Math.round(totalOutputChars / 3))
+      proxyLogger.info('Kiro', `Estimated output tokens: ${totalOutputChars} chars -> ${usage.outputTokens} tokens`)
+    }
+    
+    proxyLogger.info('Kiro', 'Stream complete, final usage', usage)
     onComplete(usage)
   } catch (error) {
     onError(error as Error)
