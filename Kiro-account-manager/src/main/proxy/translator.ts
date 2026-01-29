@@ -349,7 +349,7 @@ export interface OpenAIUsage {
 export function createOpenaiStreamChunk(
   id: string,
   model: string,
-  delta: { role?: 'assistant'; content?: string; tool_calls?: { index: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string } }[] },
+  delta: { role?: 'assistant'; content?: string; reasoning_content?: string; tool_calls?: { index: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string } }[] },
   finishReason: 'stop' | 'tool_calls' | null = null,
   usage?: OpenAIUsage
 ): OpenAIStreamChunk & { usage?: OpenAIUsage } {

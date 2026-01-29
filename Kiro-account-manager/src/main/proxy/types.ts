@@ -108,8 +108,9 @@ export interface ClaudeSystemBlock {
 }
 
 export interface ClaudeContentBlock {
-  type: 'text' | 'image' | 'tool_use' | 'tool_result'
+  type: 'text' | 'image' | 'tool_use' | 'tool_result' | 'thinking'
   text?: string
+  thinking?: string
   source?: { type: 'base64'; media_type: string; data: string }
   id?: string
   name?: string
@@ -143,7 +144,7 @@ export interface ClaudeStreamEvent {
   message?: Partial<ClaudeResponse>
   index?: number
   content_block?: ClaudeContentBlock
-  delta?: { type: string; text?: string; stop_reason?: string; stop_sequence?: string }
+  delta?: { type: string; text?: string; thinking?: string; reasoning_content?: string; stop_reason?: string; stop_sequence?: string }
   usage?: { input_tokens?: number; output_tokens: number }
   error?: { type: string; message: string }
 }
@@ -245,6 +246,16 @@ export interface ProxyAccount {
 // API Key 格式类型
 export type ApiKeyFormat = 'sk' | 'simple' | 'token'
 
+// API Key 用量记录
+export interface ApiKeyUsageRecord {
+  timestamp: number
+  model: string
+  inputTokens: number
+  outputTokens: number
+  credits: number
+  path: string
+}
+
 // API Key 类型
 export interface ApiKey {
   id: string
@@ -269,7 +280,16 @@ export interface ApiKey {
       inputTokens: number
       outputTokens: number
     }>
+    // 按模型统计
+    byModel?: Record<string, {
+      requests: number
+      credits: number
+      inputTokens: number
+      outputTokens: number
+    }>
   }
+  // 用量历史记录（最近 100 条）
+  usageHistory?: ApiKeyUsageRecord[]
 }
 
 export interface ProxyConfig {
@@ -301,6 +321,8 @@ export interface ProxyConfig {
   autoSwitchOnQuotaExhausted?: boolean
   // 模型思考模式配置（模型名 -> 是否默认启用思考模式）
   modelThinkingMode?: Record<string, boolean>
+  // 思考内容输出格式：reasoning_content / thinking / think
+  thinkingOutputFormat?: 'reasoning_content' | 'thinking' | 'think'
 }
 
 export interface TlsConfig {

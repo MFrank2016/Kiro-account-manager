@@ -271,13 +271,21 @@ The project is configured with GitHub Actions workflow for auto building all pla
 
 ## 📋 Changelog
 
+### v1.4.8 (2025-01-29)
+- 📊 **Request Logs Model Column**: Added model column to request logs table and recent requests preview
+- 🧠 **Thinking Tag Conversion**: Detect &lt;thinking&gt; tags in regular responses and convert based on config
+- 📜 **Detailed Logs Sorting**: Fixed detailed logs sorting, newest logs now appear first
+- 📈 **API Key Usage Details**: New usage details dialog with history, model stats, and daily charts
+- 🗂️ **API Key Manager Optimization**: Dialog width increased from 600px to 800px for better display
+- 🧠 **Thinking Output Format**: Added dropdown to select reasoning_content / &lt;thinking&gt; / &lt;think&gt; formats
+
 ### v1.4.7 (2025-01-29)
 - 📊 **Request Logs Token Detail**: Added Input/Output tokens columns to request logs table
 - 📊 **Recent Requests Enhancement**: Recent requests preview also shows Input/Output tokens
 - 📐 **Logs Dialog Width**: Increased request logs dialog width from 700px to 900px
 - 🎯 **Toolbar Layout Optimization**: Account management toolbar buttons right-aligned with reduced spacing
-- � **Trial/Bonus Quota Display**: Fixed REST API freeTrialInfo and bonuses display with unified timestamp format
-- �🔧 **Machine ID Page Fix**: Fixed copy/refresh buttons not responding to clicks
+- 💰 **Trial/Bonus Quota Display**: Fixed REST API freeTrialInfo and bonuses display with unified timestamp format
+- 🔧 **Machine ID Page Fix**: Fixed copy/refresh buttons not responding to clicks
 - ✅ **Copy Feedback**: Machine ID page copy button now shows "Copied!" feedback
 - 🔄 **Refresh Animation**: Machine ID refresh button now shows spinning animation
 

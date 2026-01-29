@@ -140,7 +140,8 @@ export function ProxyDetailedLogsDialog({ open, onOpenChange }: ProxyDetailedLog
 
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      // 最新日志在顶部，滚动到顶部
+      scrollRef.current.scrollTop = 0
     }
   }, [logs, autoScroll])
 
@@ -259,7 +260,8 @@ export function ProxyDetailedLogsDialog({ open, onOpenChange }: ProxyDetailedLog
       if (limit > 0) result = result.slice(-limit)
     }
     
-    return result
+    // 反转顺序，最新的在前面
+    return result.reverse()
   }, [logs, timeRange, levelFilter, categoryFilter, searchText, displayLimit])
 
   // 分页逻辑

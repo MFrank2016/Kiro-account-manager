@@ -5,13 +5,23 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { 
   Key, Plus, Trash2, Copy, Check, RefreshCw, Eye, EyeOff, 
-  BarChart3, Clock, Zap, MessageSquare
+  BarChart3, Clock, Zap, MessageSquare, ExternalLink
 } from 'lucide-react'
 import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { useAccountsStore } from '@/store/accounts'
+import { ApiKeyUsageDialog } from './ApiKeyUsageDialog'
 
 type ApiKeyFormat = 'sk' | 'simple' | 'token'
+
+interface UsageRecord {
+  timestamp: number
+  model: string
+  inputTokens: number
+  outputTokens: number
+  credits: number
+  path: string
+}
 
 interface ApiKey {
   id: string
@@ -33,7 +43,14 @@ interface ApiKey {
       inputTokens: number
       outputTokens: number
     }>
+    byModel?: Record<string, {
+      requests: number
+      credits: number
+      inputTokens: number
+      outputTokens: number
+    }>
   }
+  usageHistory?: UsageRecord[]
 }
 
 export function ApiKeyManager() {
@@ -48,6 +65,7 @@ export function ApiKeyManager() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [showKeys, setShowKeys] = useState<Set<string>>(new Set())
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [showUsageDialog, setShowUsageDialog] = useState(false)
 
   const loadApiKeys = useCallback(async () => {
     try {
@@ -240,7 +258,7 @@ export function ApiKeyManager() {
                     />
                   </div>
                   
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 overflow-hidden">
                     <div className="font-medium truncate">{apiKey.name}</div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <code className="bg-muted px-1 rounded">
@@ -296,6 +314,10 @@ export function ApiKeyManager() {
                 </CardTitle>
               </div>
               <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setShowUsageDialog(true)}>
+                  <ExternalLink className="h-3 w-3 mr-1" />
+                  {isEn ? 'View Details' : '查看详情'}
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => handleResetUsage(selectedKeyData.id)}>
                   <RefreshCw className="h-3 w-3 mr-1" />
                   {isEn ? 'Reset Usage' : '重置用量'}
@@ -372,6 +394,13 @@ export function ApiKeyManager() {
           </CardContent>
         </Card>
       )}
+
+      {/* 用量详情对话框 */}
+      <ApiKeyUsageDialog
+        open={showUsageDialog}
+        onOpenChange={setShowUsageDialog}
+        apiKey={selectedKeyData || null}
+      />
     </div>
   )
 }

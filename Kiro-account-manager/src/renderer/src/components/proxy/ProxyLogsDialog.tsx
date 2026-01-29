@@ -5,6 +5,7 @@ import { Button, Card, CardContent, CardHeader, CardTitle, Badge } from '../ui'
 interface LogEntry {
   time: string
   path: string
+  model?: string
   status: number
   tokens?: number
   inputTokens?: number
@@ -117,6 +118,7 @@ export function ProxyLogsDialog({
                   <tr>
                     <th className="text-left p-2 font-medium">{isEn ? 'Time' : '时间'}</th>
                     <th className="text-left p-2 font-medium">{isEn ? 'Path' : '路径'}</th>
+                    <th className="text-left p-2 font-medium">{isEn ? 'Model' : '模型'}</th>
                     <th className="text-center p-2 font-medium">{isEn ? 'Status' : '状态'}</th>
                     <th className="text-center p-2 font-medium">{isEn ? 'In' : '输入'}</th>
                     <th className="text-center p-2 font-medium">{isEn ? 'Out' : '输出'}</th>
@@ -128,7 +130,8 @@ export function ProxyLogsDialog({
                   {logs.map((log, idx) => (
                     <tr key={idx} className="border-b border-muted/30 hover:bg-muted/30">
                       <td className="p-2 text-muted-foreground whitespace-nowrap">{log.time}</td>
-                      <td className="p-2 truncate max-w-[300px]" title={log.path}>{log.path}</td>
+                      <td className="p-2 truncate max-w-[200px]" title={log.path}>{log.path}</td>
+                      <td className="p-2 truncate max-w-[150px] text-muted-foreground" title={log.model}>{log.model ? log.model.replace('anthropic.', '').replace('-v1:0', '') : '-'}</td>
                       <td className="p-2 text-center relative">
                         {log.status >= 400 && log.error ? (
                           <div className="relative inline-block">

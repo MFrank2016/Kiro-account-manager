@@ -512,7 +512,7 @@ function getSortedEndpoints(preferredEndpoint?: 'codewhisperer' | 'amazonq'): ty
 export async function callKiroApiStream(
   account: ProxyAccount,
   payload: KiroPayload,
-  onChunk: (text: string, toolUse?: KiroToolUse) => void,
+  onChunk: (text: string, toolUse?: KiroToolUse, isThinking?: boolean) => void,
   onComplete: (usage: { inputTokens: number; outputTokens: number; credits: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number }) => void,
   onError: (error: Error) => void,
   signal?: AbortSignal,
@@ -633,7 +633,7 @@ interface ToolUseState {
 // 解析 AWS Event Stream 二进制格式
 async function parseEventStream(
   body: ReadableStream<Uint8Array>,
-  onChunk: (text: string, toolUse?: KiroToolUse) => void,
+  onChunk: (text: string, toolUse?: KiroToolUse, isThinking?: boolean) => void,
   onComplete: (usage: { inputTokens: number; outputTokens: number; credits: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number }) => void,
   onError: (error: Error) => void,
   inputChars: number = 0  // 输入字符长度，用于估算 input tokens
@@ -924,8 +924,9 @@ async function parseEventStream(
               const reasoning = event.reasoningContentEvent || event
               // 推理内容可能包含 text 或 signature
               if (reasoning.text) {
-                // 将推理内容作为特殊格式输出（用 <thinking> 标签包裹）
-                onChunk(`<thinking>${reasoning.text}</thinking>`)
+                // 传递 isThinking=true 标记这是思考内容
+                proxyLogger.info('Kiro', `Received reasoning content (isThinking=true): ${reasoning.text.slice(0, 50)}...`)
+                onChunk(reasoning.text, undefined, true)
                 totalOutputChars += reasoning.text.length
                 // 累计 reasoning tokens（约 3 字符 = 1 token）
                 usage.reasoningTokens += Math.max(1, Math.round(reasoning.text.length / 3))

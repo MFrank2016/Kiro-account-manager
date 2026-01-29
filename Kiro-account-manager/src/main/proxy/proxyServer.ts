@@ -26,7 +26,7 @@ import {
 
 export interface ProxyServerEvents {
   onRequest?: (info: { path: string; method: string; accountId?: string }) => void
-  onResponse?: (info: { path: string; status: number; tokens?: number; inputTokens?: number; outputTokens?: number; credits?: number; error?: string }) => void
+  onResponse?: (info: { path: string; model?: string; status: number; tokens?: number; inputTokens?: number; outputTokens?: number; credits?: number; error?: string }) => void
   onError?: (error: Error) => void
   onConfigChanged?: (config: ProxyConfig) => void  // API Key 用量更新时触发
   onStatusChange?: (running: boolean, port: number) => void
@@ -620,19 +620,20 @@ export class ProxyServer {
   }
 
   // 记录 API Key 用量
-  recordApiKeyUsage(apiKeyId: string, credits: number, inputTokens: number, outputTokens: number): void {
+  recordApiKeyUsage(apiKeyId: string, credits: number, inputTokens: number, outputTokens: number, model?: string, path?: string): void {
     if (!this.config.apiKeys) return
     const apiKey = this.config.apiKeys.find(k => k.id === apiKeyId)
     if (!apiKey) return
 
     const today = new Date().toISOString().split('T')[0]
+    const now = Date.now()
     
     // 更新总计
     apiKey.usage.totalRequests++
     apiKey.usage.totalCredits += credits
     apiKey.usage.totalInputTokens += inputTokens
     apiKey.usage.totalOutputTokens += outputTokens
-    apiKey.lastUsedAt = Date.now()
+    apiKey.lastUsedAt = now
 
     // 更新日统计
     if (!apiKey.usage.daily[today]) {
@@ -642,6 +643,36 @@ export class ProxyServer {
     apiKey.usage.daily[today].credits += credits
     apiKey.usage.daily[today].inputTokens += inputTokens
     apiKey.usage.daily[today].outputTokens += outputTokens
+
+    // 更新模型统计
+    if (model) {
+      if (!apiKey.usage.byModel) {
+        apiKey.usage.byModel = {}
+      }
+      if (!apiKey.usage.byModel[model]) {
+        apiKey.usage.byModel[model] = { requests: 0, credits: 0, inputTokens: 0, outputTokens: 0 }
+      }
+      apiKey.usage.byModel[model].requests++
+      apiKey.usage.byModel[model].credits += credits
+      apiKey.usage.byModel[model].inputTokens += inputTokens
+      apiKey.usage.byModel[model].outputTokens += outputTokens
+    }
+
+    // 添加用量历史记录（保留最近 100 条）
+    if (!apiKey.usageHistory) {
+      apiKey.usageHistory = []
+    }
+    apiKey.usageHistory.unshift({
+      timestamp: now,
+      model: model || 'unknown',
+      inputTokens,
+      outputTokens,
+      credits,
+      path: path || 'unknown'
+    })
+    if (apiKey.usageHistory.length > 100) {
+      apiKey.usageHistory = apiKey.usageHistory.slice(0, 100)
+    }
 
     // 触发配置保存事件
     this.events.onConfigChanged?.(this.config)
@@ -979,7 +1010,7 @@ export class ProxyServer {
     if (!account) {
       this.recordRequestFailed()
       this.sendError(res, 503, 'No available accounts')
-      this.events.onResponse?.({ path: '/v1/chat/completions', status: 503, error: 'No available accounts' })
+      this.events.onResponse?.({ path: '/v1/chat/completions', model: request.model, status: 503, error: 'No available accounts' })
       this.recordRequest({ path: '/v1/chat/completions', model: request.model, success: false, error: 'No available accounts' })
       return
     }
@@ -1045,11 +1076,11 @@ export class ProxyServer {
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(response))
-        this.events.onResponse?.({ path: '/v1/chat/completions', status: 200, tokens: result.usage.inputTokens + result.usage.outputTokens, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens })
+        this.events.onResponse?.({ path: '/v1/chat/completions', model: request.model, status: 200, tokens: result.usage.inputTokens + result.usage.outputTokens, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens })
         this.recordRequest({ path: '/v1/chat/completions', model: request.model, accountId: usedAccount.id, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, responseTime: Date.now() - startTime, success: true })
         // 记录 API Key 用量
         if (matchedApiKey) {
-          this.recordApiKeyUsage(matchedApiKey.id, result.usage.credits || 0, result.usage.inputTokens, result.usage.outputTokens)
+          this.recordApiKeyUsage(matchedApiKey.id, result.usage.credits || 0, result.usage.inputTokens, result.usage.outputTokens, request.model, '/v1/chat/completions')
         }
       }
     } catch (error) {
@@ -1081,6 +1112,10 @@ export class ProxyServer {
     let toolCallIndex = 0
     const pendingToolCalls: Map<string, { index: number; name: string; arguments: string }> = new Map()
     let collectedContent = ''
+    let hasLoggedThinkingFormat = false
+    // 用于检测普通响应中的 <thinking> 标签
+    let textBuffer = ''
+    let inThinkingBlock = false
 
     // 发送初始 chunk（仅首轮）
     if (currentRound === 0) {
@@ -1088,15 +1123,113 @@ export class ProxyServer {
       res.write(`data: ${JSON.stringify(initialChunk)}\n\n`)
     }
 
+    // 处理文本输出，检测并转换 <thinking> 标签
+    const processText = (text: string, forceFlush = false) => {
+      const format = this.config.thinkingOutputFormat || 'reasoning_content'
+      textBuffer += text
+      
+      while (true) {
+        if (!inThinkingBlock) {
+          // 查找 <thinking> 开始标签
+          const thinkingStart = textBuffer.indexOf('<thinking>')
+          if (thinkingStart !== -1) {
+            // 输出 thinking 标签之前的内容
+            if (thinkingStart > 0) {
+              const beforeThinking = textBuffer.substring(0, thinkingStart)
+              collectedContent += beforeThinking
+              const chunk = createOpenaiStreamChunk(id, model, { content: beforeThinking })
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+            }
+            textBuffer = textBuffer.substring(thinkingStart + 10) // 移除 <thinking>
+            inThinkingBlock = true
+            if (!hasLoggedThinkingFormat) {
+              proxyLogger.info('ProxyServer', `Detected <thinking> tag, output format: ${format}`)
+              hasLoggedThinkingFormat = true
+            }
+          } else if (forceFlush || textBuffer.length > 50) {
+            // 没有找到标签，安全输出（保留可能的部分标签，需要足够长以检测 </thinking>）
+            const safeLength = forceFlush ? textBuffer.length : Math.max(0, textBuffer.length - 15)
+            if (safeLength > 0) {
+              const safeText = textBuffer.substring(0, safeLength)
+              collectedContent += safeText
+              const chunk = createOpenaiStreamChunk(id, model, { content: safeText })
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              textBuffer = textBuffer.substring(safeLength)
+            }
+            break
+          } else {
+            break
+          }
+        } else {
+          // 在 thinking 块内，查找 </thinking> 结束标签
+          const thinkingEnd = textBuffer.indexOf('</thinking>')
+          if (thinkingEnd !== -1) {
+            // 输出 thinking 内容
+            const thinkingContent = textBuffer.substring(0, thinkingEnd)
+            if (thinkingContent) {
+              if (format === 'thinking') {
+                const chunk = createOpenaiStreamChunk(id, model, { content: `<thinking>${thinkingContent}</thinking>` })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              } else if (format === 'think') {
+                const chunk = createOpenaiStreamChunk(id, model, { content: `<think>${thinkingContent}</think>` })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              } else {
+                const chunk = createOpenaiStreamChunk(id, model, { reasoning_content: thinkingContent })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              }
+            }
+            textBuffer = textBuffer.substring(thinkingEnd + 11) // 移除 </thinking>
+            inThinkingBlock = false
+          } else if (forceFlush) {
+            // 强制刷新：输出剩余内容（未闭合的 thinking 块）
+            if (textBuffer) {
+              if (format === 'thinking') {
+                const chunk = createOpenaiStreamChunk(id, model, { content: `<thinking>${textBuffer}</thinking>` })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              } else if (format === 'think') {
+                const chunk = createOpenaiStreamChunk(id, model, { content: `<think>${textBuffer}</think>` })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              } else {
+                const chunk = createOpenaiStreamChunk(id, model, { reasoning_content: textBuffer })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              }
+              textBuffer = ''
+            }
+            break
+          } else {
+            break
+          }
+        }
+      }
+    }
+
     return new Promise((resolve) => {
       callKiroApiStream(
         account as any,
         kiroPayload,
-        (text, toolUse) => {
+        (text, toolUse, isThinking) => {
           if (text) {
-            collectedContent += text
-            const chunk = createOpenaiStreamChunk(id, model, { content: text })
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+            if (isThinking) {
+              // reasoningContentEvent 的思考内容
+              const format = this.config.thinkingOutputFormat || 'reasoning_content'
+              if (!hasLoggedThinkingFormat) {
+                proxyLogger.info('ProxyServer', `Thinking output format (reasoningContentEvent): ${format}`)
+                hasLoggedThinkingFormat = true
+              }
+              if (format === 'thinking') {
+                const chunk = createOpenaiStreamChunk(id, model, { content: `<thinking>${text}</thinking>` })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              } else if (format === 'think') {
+                const chunk = createOpenaiStreamChunk(id, model, { content: `<think>${text}</think>` })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              } else {
+                const chunk = createOpenaiStreamChunk(id, model, { reasoning_content: text })
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              }
+            } else {
+              // 普通文本，检测 <thinking> 标签
+              processText(text)
+            }
           }
           if (toolUse) {
             const idx = toolCallIndex++
@@ -1121,6 +1254,9 @@ export class ProxyServer {
           }
         },
         async (usage) => {
+          // 刷新缓冲区中剩余的内容
+          processText('', true)
+          
           this.recordRequestSuccess()
           this.stats.totalTokens += usage.inputTokens + usage.outputTokens
           this.stats.inputTokens += usage.inputTokens
@@ -1129,11 +1265,11 @@ export class ProxyServer {
           this.events.onCreditsUpdate?.(this.stats.totalCredits)
           this.events.onTokensUpdate?.(this.stats.inputTokens, this.stats.outputTokens)
           this.accountPool.recordSuccess(account.id, usage.inputTokens + usage.outputTokens)
-          this.events.onResponse?.({ path: '/v1/chat/completions', status: 200, tokens: usage.inputTokens + usage.outputTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits })
+          this.events.onResponse?.({ path: '/v1/chat/completions', model, status: 200, tokens: usage.inputTokens + usage.outputTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits })
           this.recordRequest({ path: '/v1/chat/completions', model, accountId: account.id, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits, responseTime: Date.now() - startTime, success: true })
           // 记录 API Key 用量
           if (matchedApiKey) {
-            this.recordApiKeyUsage(matchedApiKey.id, usage.credits || 0, usage.inputTokens, usage.outputTokens)
+            this.recordApiKeyUsage(matchedApiKey.id, usage.credits || 0, usage.inputTokens, usage.outputTokens, model, '/v1/chat/completions')
           }
 
           // 检查是否需要自动继续
@@ -1242,7 +1378,7 @@ export class ProxyServer {
           this.recordRequestFailed()
           const isQuotaError = error.message.includes('429') || error.message.includes('quota')
           this.accountPool.recordError(account.id, isQuotaError)
-          this.events.onResponse?.({ path: '/v1/chat/completions', status: 500, error: error.message })
+          this.events.onResponse?.({ path: '/v1/chat/completions', model, status: 500, error: error.message })
           this.recordRequest({ path: '/v1/chat/completions', model, accountId: account.id, responseTime: Date.now() - startTime, success: false, error: error.message })
           resolve()
         }
@@ -1268,7 +1404,7 @@ export class ProxyServer {
     if (!account) {
       this.recordRequestFailed()
       this.sendError(res, 503, 'No available accounts')
-      this.events.onResponse?.({ path: '/v1/messages', status: 503, error: 'No available accounts' })
+      this.events.onResponse?.({ path: '/v1/messages', model: request.model, status: 503, error: 'No available accounts' })
       this.recordRequest({ path: '/v1/messages', model: request.model, success: false, error: 'No available accounts' })
       return
     }
@@ -1329,7 +1465,7 @@ export class ProxyServer {
 
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(response))
-        this.events.onResponse?.({ path: '/v1/messages', status: 200, tokens: result.usage.inputTokens + result.usage.outputTokens, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens })
+        this.events.onResponse?.({ path: '/v1/messages', model: request.model, status: 200, tokens: result.usage.inputTokens + result.usage.outputTokens, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens })
         this.recordRequest({ path: '/v1/messages', model: request.model, accountId: usedAccount.id, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, responseTime: Date.now() - startTime, success: true })
       }
     } catch (error) {
@@ -1363,9 +1499,132 @@ export class ProxyServer {
     let hasStartedTextBlock = false
     let collectedContent = ''
     const pendingToolCalls: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
+    let hasLoggedThinkingFormat = false
+    // 用于检测普通响应中的 <thinking> 标签
+    let textBuffer = ''
+    let inThinkingBlock = false
 
     // 估算输入 tokens（基于 payload 大小）
     const estimatedInputTokens = Math.max(1, Math.round(JSON.stringify(kiroPayload).length / 3))
+
+    // 处理文本输出，检测并转换 <thinking> 标签
+    const processClaudeText = (text: string, forceFlush = false) => {
+      const format = this.config.thinkingOutputFormat || 'reasoning_content'
+      textBuffer += text
+      
+      while (true) {
+        if (!inThinkingBlock) {
+          // 查找 <thinking> 开始标签
+          const thinkingStart = textBuffer.indexOf('<thinking>')
+          if (thinkingStart !== -1) {
+            // 输出 thinking 标签之前的内容
+            if (thinkingStart > 0) {
+              const beforeThinking = textBuffer.substring(0, thinkingStart)
+              collectedContent += beforeThinking
+              if (!hasStartedTextBlock) {
+                const blockStart = createClaudeStreamEvent('content_block_start', {
+                  index: currentBlockIndex,
+                  content_block: { type: 'text', text: '' }
+                })
+                res.write(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`)
+                hasStartedTextBlock = true
+              }
+              const delta = createClaudeStreamEvent('content_block_delta', {
+                index: currentBlockIndex,
+                delta: { type: 'text_delta', text: beforeThinking }
+              })
+              res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+            }
+            textBuffer = textBuffer.substring(thinkingStart + 10) // 移除 <thinking>
+            inThinkingBlock = true
+            if (!hasLoggedThinkingFormat) {
+              proxyLogger.info('ProxyServer', `[Claude] Detected <thinking> tag, output format: ${format}`)
+              hasLoggedThinkingFormat = true
+            }
+          } else if (forceFlush || textBuffer.length > 50) {
+            // 没有找到标签，安全输出
+            const safeLength = forceFlush ? textBuffer.length : Math.max(0, textBuffer.length - 15)
+            if (safeLength > 0) {
+              const safeText = textBuffer.substring(0, safeLength)
+              collectedContent += safeText
+              if (!hasStartedTextBlock) {
+                const blockStart = createClaudeStreamEvent('content_block_start', {
+                  index: currentBlockIndex,
+                  content_block: { type: 'text', text: '' }
+                })
+                res.write(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`)
+                hasStartedTextBlock = true
+              }
+              const delta = createClaudeStreamEvent('content_block_delta', {
+                index: currentBlockIndex,
+                delta: { type: 'text_delta', text: safeText }
+              })
+              res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+              textBuffer = textBuffer.substring(safeLength)
+            }
+            break
+          } else {
+            break
+          }
+        } else {
+          // 在 thinking 块内，查找 </thinking> 结束标签
+          const thinkingEnd = textBuffer.indexOf('</thinking>')
+          if (thinkingEnd !== -1) {
+            // 输出 thinking 内容
+            const thinkingContent = textBuffer.substring(0, thinkingEnd)
+            if (thinkingContent) {
+              if (!hasStartedTextBlock) {
+                const blockStart = createClaudeStreamEvent('content_block_start', {
+                  index: currentBlockIndex,
+                  content_block: { type: 'text', text: '' }
+                })
+                res.write(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`)
+                hasStartedTextBlock = true
+              }
+              if (format === 'thinking') {
+                const delta = createClaudeStreamEvent('content_block_delta', {
+                  index: currentBlockIndex,
+                  delta: { type: 'text_delta', text: `<thinking>${thinkingContent}</thinking>` }
+                })
+                res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+              } else if (format === 'think') {
+                const delta = createClaudeStreamEvent('content_block_delta', {
+                  index: currentBlockIndex,
+                  delta: { type: 'text_delta', text: `<think>${thinkingContent}</think>` }
+                })
+                res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+              }
+              // reasoning_content 格式：过滤掉 thinking 内容（大多数客户端不支持此字段）
+            }
+            textBuffer = textBuffer.substring(thinkingEnd + 11) // 移除 </thinking>
+            inThinkingBlock = false
+          } else if (forceFlush && textBuffer) {
+            // 强制刷新：输出剩余内容
+            if (format === 'thinking' || format === 'think') {
+              if (!hasStartedTextBlock) {
+                const blockStart = createClaudeStreamEvent('content_block_start', {
+                  index: currentBlockIndex,
+                  content_block: { type: 'text', text: '' }
+                })
+                res.write(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`)
+                hasStartedTextBlock = true
+              }
+              const tag = format === 'thinking' ? 'thinking' : 'think'
+              const delta = createClaudeStreamEvent('content_block_delta', {
+                index: currentBlockIndex,
+                delta: { type: 'text_delta', text: `<${tag}>${textBuffer}</${tag}>` }
+              })
+              res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+            }
+            // reasoning_content 格式：过滤掉 thinking 内容
+            textBuffer = ''
+            break
+          } else {
+            break
+          }
+        }
+      }
+    }
     
     // 发送 message_start（仅首轮）
     if (currentRound === 0) {
@@ -1388,24 +1647,36 @@ export class ProxyServer {
       callKiroApiStream(
         account as any,
         kiroPayload,
-        (text, toolUse) => {
+        (text, toolUse, isThinking) => {
           if (text) {
-            collectedContent += text
-            if (!hasStartedTextBlock) {
-              // 开始文本块
-              const blockStart = createClaudeStreamEvent('content_block_start', {
-                index: currentBlockIndex,
-                content_block: { type: 'text', text: '' }
-              })
-              res.write(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`)
-              hasStartedTextBlock = true
+            if (isThinking) {
+              // reasoningContentEvent 的思考内容
+              const format = this.config.thinkingOutputFormat || 'reasoning_content'
+              if (!hasLoggedThinkingFormat) {
+                proxyLogger.info('ProxyServer', `[Claude] Thinking output format (reasoningContentEvent): ${format}`)
+                hasLoggedThinkingFormat = true
+              }
+              // reasoning_content 格式：过滤掉思考内容（大多数客户端不支持）
+              if (format === 'thinking' || format === 'think') {
+                if (!hasStartedTextBlock) {
+                  const blockStart = createClaudeStreamEvent('content_block_start', {
+                    index: currentBlockIndex,
+                    content_block: { type: 'text', text: '' }
+                  })
+                  res.write(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`)
+                  hasStartedTextBlock = true
+                }
+                const tag = format === 'thinking' ? 'thinking' : 'think'
+                const delta = createClaudeStreamEvent('content_block_delta', {
+                  index: currentBlockIndex,
+                  delta: { type: 'text_delta', text: `<${tag}>${text}</${tag}>` }
+                })
+                res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+              }
+            } else {
+              // 普通文本，检测 <thinking> 标签
+              processClaudeText(text)
             }
-            // 发送文本 delta
-            const delta = createClaudeStreamEvent('content_block_delta', {
-              index: currentBlockIndex,
-              delta: { type: 'text_delta', text }
-            })
-            res.write(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
           }
           if (toolUse) {
             // 结束之前的文本块
@@ -1436,6 +1707,9 @@ export class ProxyServer {
           }
         },
         async (usage) => {
+          // 刷新缓冲区中剩余的内容
+          processClaudeText('', true)
+          
           // 结束最后的文本块
           if (hasStartedTextBlock) {
             const blockStop = createClaudeStreamEvent('content_block_stop', { index: currentBlockIndex })
@@ -1451,11 +1725,11 @@ export class ProxyServer {
           this.events.onCreditsUpdate?.(this.stats.totalCredits)
           this.events.onTokensUpdate?.(this.stats.inputTokens, this.stats.outputTokens)
           this.accountPool.recordSuccess(account.id, usage.inputTokens + usage.outputTokens)
-          this.events.onResponse?.({ path: '/v1/messages', status: 200, tokens: usage.inputTokens + usage.outputTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits })
+          this.events.onResponse?.({ path: '/v1/messages', model, status: 200, tokens: usage.inputTokens + usage.outputTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits })
           this.recordRequest({ path: '/v1/messages', model, accountId: account.id, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, credits: usage.credits, responseTime: Date.now() - startTime, success: true })
           // 记录 API Key 用量
           if (matchedApiKey) {
-            this.recordApiKeyUsage(matchedApiKey.id, usage.credits || 0, usage.inputTokens, usage.outputTokens)
+            this.recordApiKeyUsage(matchedApiKey.id, usage.credits || 0, usage.inputTokens, usage.outputTokens, model, '/v1/messages')
           }
 
           // 检查是否需要自动继续
@@ -1541,7 +1815,7 @@ export class ProxyServer {
           this.recordRequestFailed()
           const isQuotaError = error.message.includes('429') || error.message.includes('quota')
           this.accountPool.recordError(account.id, isQuotaError)
-          this.events.onResponse?.({ path: '/v1/messages', status: 500, error: error.message })
+          this.events.onResponse?.({ path: '/v1/messages', model, status: 500, error: error.message })
           this.recordRequest({ path: '/v1/messages', model, accountId: account.id, responseTime: Date.now() - startTime, success: false, error: error.message })
           resolve()
         }

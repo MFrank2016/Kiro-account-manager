@@ -61,7 +61,7 @@ export function ProxyPanel() {
   const [availableCount, setAvailableCount] = useState(0)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [recentLogs, setRecentLogs] = useState<Array<{ time: string; path: string; status: number; tokens?: number; inputTokens?: number; outputTokens?: number; credits?: number; error?: string }>>([])
+  const [recentLogs, setRecentLogs] = useState<Array<{ time: string; path: string; model?: string; status: number; tokens?: number; inputTokens?: number; outputTokens?: number; credits?: number; error?: string }>>([])
   const [isSyncing, setIsSyncing] = useState(false)
   const [isRefreshingModels, setIsRefreshingModels] = useState(false)
   const [syncSuccess, setSyncSuccess] = useState(false)
@@ -288,6 +288,7 @@ export function ProxyPanel() {
       setRecentLogs(prev => [{
         time: fullTime,
         path: info.path,
+        model: info.model,
         status: info.status,
         tokens: info.tokens,
         inputTokens: info.inputTokens,
@@ -721,6 +722,24 @@ export function ProxyPanel() {
                 </div>
                 <p className="text-xs text-muted-foreground">{isEn ? 'Auto-enable Extended Thinking for selected models' : '为选中的模型自动启用扩展思考模式'}</p>
               </div>
+              <div className="space-y-2">
+                <Label>{isEn ? 'Thinking Output Format' : '思考内容输出格式'}</Label>
+                <Select
+                  value={(config as any).thinkingOutputFormat || 'reasoning_content'}
+                  options={[
+                    { value: 'reasoning_content', label: 'reasoning_content', description: isEn ? 'DeepSeek compatible' : 'DeepSeek 兼容' },
+                    { value: 'thinking', label: '<thinking>', description: isEn ? 'Claude native' : 'Claude 原生' },
+                    { value: 'think', label: '<think>', description: isEn ? 'OpenAI compatible' : 'OpenAI 兼容' }
+                  ]}
+                  onChange={(value) => {
+                    if (isRunning) return
+                    setConfig(prev => ({ ...prev, thinkingOutputFormat: value } as any))
+                    window.api.proxyUpdateConfig({ thinkingOutputFormat: value } as any)
+                  }}
+                  className={isRunning ? 'opacity-50 pointer-events-none' : ''}
+                />
+                <p className="text-xs text-muted-foreground">{isEn ? 'Choose how thinking content is returned in API response' : '选择思考内容在 API 响应中的返回格式'}</p>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -903,9 +922,10 @@ export function ProxyPanel() {
           <CardContent className="pt-2">
             <div className="max-h-[150px] overflow-y-auto text-xs font-mono space-y-0.5">
               {recentLogs.slice(0, 5).map((log, idx) => (
-                <div key={idx} className="grid gap-2 py-1 px-2 rounded hover:bg-muted/50 items-center" style={{ gridTemplateColumns: '2fr 1.5fr 0.5fr 1fr 1fr 1fr 1fr' }}>
+                <div key={idx} className="grid gap-2 py-1 px-2 rounded hover:bg-muted/50 items-center" style={{ gridTemplateColumns: '2fr 1fr 1.2fr 0.5fr 1fr 1fr 1fr 1fr' }}>
                   <span className="text-muted-foreground whitespace-nowrap text-left">{log.time}</span>
                   <span className="truncate text-left" title={log.path}>{log.path}</span>
+                  <span className="truncate text-left text-muted-foreground" title={log.model}>{log.model ? log.model.replace('anthropic.', '').replace('-v1:0', '') : '-'}</span>
                   <span className={`text-center ${log.status >= 400 ? 'text-red-500' : 'text-green-500'}`}>{log.status}</span>
                   <span className="text-muted-foreground text-right">{log.inputTokens ? log.inputTokens.toLocaleString() : '-'}</span>
                   <span className="text-muted-foreground text-right">{log.outputTokens ? log.outputTokens.toLocaleString() : '-'}</span>
@@ -1018,7 +1038,7 @@ export function ProxyPanel() {
       {showApiKeyManager && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowApiKeyManager(false)} />
-          <div className="relative bg-background rounded-lg shadow-lg w-[600px] max-h-[80vh] overflow-y-auto p-4">
+          <div className="relative bg-background rounded-lg shadow-lg w-[800px] max-h-[80vh] overflow-y-auto p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">{isEn ? 'API Key Management' : 'API Key 管理'}</h2>
               <Button variant="ghost" size="icon" onClick={() => setShowApiKeyManager(false)}>✕</Button>
